@@ -1,0 +1,231 @@
+
+
+
+
+
+// Add these input parameters at the top of your file with the other inputs
+input bool QuickScalpingMode = true;           // Enable quick scalping mode
+input double QuickTP = 5.0;                    // Quick take profit in pips
+input double QuickSL = 10.0;                   // Quick stop loss in pips
+input int MaxTradeHoldingTime = 60;            // Max holding time in minutes (0=disabled)
+input bool UsePartialClose = true;             // Enable partial close
+input double PartialClosePercent = 50.0;       // Percentage to close at first target
+input double PartialCloseTarget = 3.0;         // First target for partial close in pips
+
+// ... existing code ...
+
+// Modify the AdjustForMarketRegime function to be more aggressive in ranging markets
+void AdjustForMarketRegime()
+{
+   if(!UseRegimeDetection || !UseAdaptiveParams) return;
+   
+   // Reset to base values first
+   adaptiveFastEMA = FastEMA;
+   adaptiveSlowEMA = SlowEMA;
+   adaptiveRSIOverbought = RSIOverbought;
+   adaptiveRSIOversold = RSIOversold;
+   adaptiveTakeProfit = TakeProfit;
+   adaptiveStopLoss = StopLoss;
+   
+   // Apply quick scalping settings if enabled
+   if(QuickScalpingMode)
+   {
+      adaptiveTakeProfit = QuickTP;
+      adaptiveStopLoss = QuickSL;
+   }
+   
+   // Adjust based on regime
+   switch(currentRegime)
+   {
+      case 1: // Strong Trend (High Vol)
+         // Use longer EMAs for stronger trend confirmation
+         adaptiveFastEMA *= 1.2;
+         adaptiveSlowEMA *= 1.2;
+         // Wider RSI bands for trend following
+         adaptiveRSIOverbought = MathMin(85, adaptiveRSIOverbought + 5);
+         adaptiveRSIOversold = MathMax(15, adaptiveRSIOversold - 5);
+         
+         if(!QuickScalpingMode)
+         {
+            // Wider TP/SL for higher volatility
+            adaptiveTakeProfit *= 1.3;
+            adaptiveStopLoss *= 1.3;
+         }
+         break;
+         
+      case 2: // Strong Trend (Low Vol)
+         // Use standard EMAs for trend following
+         // Wider RSI bands for trend following
+         adaptiveRSIOverbought = MathMin(85, adaptiveRSIOverbought + 5);
+         adaptiveRSIOversold = MathMax(15, adaptiveRSIOversold - 5);
+         // Standard TP/SL
+         break;
+         
+      case 3: // Tight Range
+         // Use shorter EMAs for quicker signals
+         adaptiveFastEMA *= 0.8;
+         adaptiveSlowEMA *= 0.8;
+         // Tighter RSI bands for range trading
+         adaptiveRSIOverbought = MathMax(65, adaptiveRSIOverbought - 5);
+         adaptiveRSIOversold = MathMin(35, adaptiveRSIOversold + 5);
+         
+         if(!QuickScalpingMode)
+         {
+            // Tighter TP/SL for range
+            adaptiveTakeProfit *= 0.8;
+            adaptiveStopLoss *= 0.8;
+         }
+         break;
+         
+      // ... other cases remain the same ...
+   }
+   
+   // ... rest of the function remains the same ...
+}
+
+// ... existing code ...
+
+// Add this function to check if a trade should be closed based on time
+void CheckTimeBasedClosing()
+{
+   if(MaxTradeHoldingTime <= 0) return;
+   
+   for(int i = 0; i < OrdersTotal(); i++)
+   {
+      if(OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+      {
+         if(OrderSymbol() == Symbol() && OrderMagicNumber() == MagicNumber)
+         {
+            // Check if trade has been open too long
+            int minutesOpen = (int)((TimeCurrent() - OrderOpenTime()) / 60);
+            
+            if(minutesOpen >= MaxTradeHoldingTime)
+            {
+               // Close the trade
+               bool result = false;
+               
+               if(OrderType() == OP_BUY)
+               {
+                  result = OrderClose(OrderTicket(), OrderLots(), Bid, Slippage, clrRed);
+               }
+               else if(OrderType() == OP_SELL)
+               {
+                  result = OrderClose(OrderTicket(), OrderLots(), Ask, Slippage, clrRed);
+               }
+               
+               if(result)
+               {
+                  Print("Closed trade #", OrderTicket(), " by time limit (", minutesOpen, " minutes)");
+               }
+            }
+         }
+      }
+   }
+}
+
+// Add this function to check for partial close opportunities
+void CheckPartialClose()
+{
+   if(!UsePartialClose) return;
+   
+   for(int i = 0; i < OrdersTotal(); i++)
+   {
+      if(OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+      {
+         if(OrderSymbol() == Symbol() && OrderMagicNumber() == MagicNumber)
+         {
+            // Check if this order has already been partially closed
+            bool alreadyPartialClosed = false;
+            
+            // Look for a history comment indicating partial close
+            for(int j = 0; j < OrdersHistoryTotal(); j++)
+            {
+               if(OrderSelect(j, SELECT_BY_POS, MODE_HISTORY))
+               {
+                  if(OrderComment() == "Partial close of #" + IntegerToString(OrderTicket()))
+                  {
+                     alreadyPartialClosed = true;
+                     break;
+                  }
+               }
+            }
+            
+            // Reselect the current order
+            OrderSelect(i, SELECT_BY_POS, MODE_TRADES);
+            
+            if(!alreadyPartialClosed)
+            {
+               double currentProfit = OrderProfit() + OrderSwap() + OrderCommission();
+               double targetPips = PartialCloseTarget * Point() * 10;
+               double lotsToClose = OrderLots() * (PartialClosePercent / 100.0);
+               
+               // Check if we've reached the partial close target
+               if((OrderType() == OP_BUY && Bid >= OrderOpenPrice() + targetPips) ||
+                  (OrderType() == OP_SELL && Ask <= OrderOpenPrice() - targetPips))
+               {
+                  // Close partial position
+                  bool result = false;
+                  
+                  if(OrderType() == OP_BUY)
+                  {
+                     result = OrderClose(OrderTicket(), lotsToClose, Bid, Slippage, clrBlue);
+                  }
+                  else if(OrderType() == OP_SELL)
+                  {
+                     result = OrderClose(OrderTicket(), lotsToClose, Ask, Slippage, clrBlue);
+                  }
+                  
+                  if(result)
+                  {
+                     Print("Partially closed trade #", OrderTicket(), " (", DoubleToString(PartialClosePercent, 0), "%)");
+                  }
+               }
+            }
+         }
+      }
+   }
+}
+
+// Modify your OnTick function to call the new functions
+void OnTick()
+{
+   // ... existing code ...
+   
+   // Check for time-based closing
+   if(QuickScalpingMode)
+   {
+      CheckTimeBasedClosing();
+   }
+   
+   // Check for partial close opportunities
+   if(UsePartialClose)
+   {
+      CheckPartialClose();
+   }
+   
+   // ... rest of OnTick ...
+}
+
+// Modify your trade entry function to use smaller TP/SL when quick scalping is enabled
+int OpenTrade(int type)
+{
+   // ... existing code ...
+   
+   // Calculate take profit and stop loss levels
+   double tp = 0, sl = 0;
+   
+   if(QuickScalpingMode)
+   {
+      // Use quick scalping TP/SL
+      tp = type == OP_BUY ? Ask + QuickTP * Point() * 10 : Bid - QuickTP * Point() * 10;
+      sl = type == OP_BUY ? Ask - QuickSL * Point() * 10 : Bid + QuickSL * Point() * 10;
+   }
+   else
+   {
+      // Use standard TP/SL calculation
+      tp = type == OP_BUY ? Ask + adaptiveTakeProfit * Point() * 10 : Bid - adaptiveTakeProfit * Point() * 10;
+      sl = type == OP_BUY ? Ask - adaptiveStopLoss * Point() * 10 : Bid + adaptiveStopLoss * Point() * 10;
+   }
+   
+   // ... rest of the function remains the same ...
+}
